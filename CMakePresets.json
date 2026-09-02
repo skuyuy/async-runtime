@@ -1,0 +1,26 @@
+{
+  "$schema": "https://cmake.org/cmake/help/latest/_downloads/3e2d73bff478d88a7de0de736ba5e361/schema.json",
+  "version": 8,
+  "configurePresets": [
+    {
+      "name": "base",
+      "description": "configuration used as base",
+      "binaryDir": "${sourceDir}/build",
+      "hidden": true
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug",
+      "description": "Base debug build preset",
+      "hidden": true,
+      "configuration": "debug"
+    },
+    {
+      "name": "release",
+      "description": "Base debug build preset",
+      "hidden": true,
+      "configuration": "debug"
+    }
+  ]
+}
