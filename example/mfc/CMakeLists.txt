@@ -12,17 +12,15 @@ add_executable(
         pch.cpp
         pch.h
         resource.h
-        SynchronizationContext.cpp
-        SynchronizationContext.h
         targetver.h
 )
 
 target_link_libraries(
         async-mfc
         PRIVATE
-        async
+        asyncrt-win
 )
 target_compile_definitions(async-mfc PRIVATE _AFXDLL)
 add_definitions(-DUNICODE -D_UNICODE)
-#target_compile_options(async-mfc PRIVATE "$<$<C_COMPILER_ID:MSVC>:/utf-8>")
-#target_compile_options(async-mfc PRIVATE "$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
+#target_compile_options(asyncrt-mfc PRIVATE "$<$<C_COMPILER_ID:MSVC>:/utf-8>")
+#target_compile_options(asyncrt-mfc PRIVATE "$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")

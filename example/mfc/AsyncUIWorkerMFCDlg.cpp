@@ -205,19 +205,39 @@ std::wstring LongWork(std::stop_token st)
 //	}
 //}
 
-IMPLEMENT_ASYNC_HANDLER(CAsyncUIWorkerMFCDlg, OnBnClickedButton1, WPARAM wp, LPARAM lp)
-{
+asyncrt::windows::Task<std::wstring> LongWorkAsync(std::stop_token st) {
+    // co_await asyncrt::windows::resume_on_threadpool();
+    co_return LongWork(st);
+}
+
+asyncrt::windows::Task<void> LongWork2Async() {
+    // co_await asyncrt::windows::resume_on_threadpool();
+    Sleep(10000);
+    co_return;
+}
+
+//IMPLEMENT_ASYNC_HANDLER(CAsyncUIWorkerMFCDlg, OnBnClickedButton1, WPARAM wp, LPARAM lp)
+void CAsyncUIWorkerMFCDlg::OnBnClickedButton1() {
+    OnBnClickedButton1_Async();
+}
+
+asyncrt::windows::Task<void> CAsyncUIWorkerMFCDlg::OnBnClickedButton1_Async() {
+    /*
+     * TODO put everything together in a RuntimeTraits<> trait struct so we can just do: asyncrt::current_context<WindowsRuntime>()
+     */
+        const auto ui_context = asyncrt::windows::Dispatcher::current();
+
 	// Cooperative cancellation (the task handles cancellation by itself)
 	// -> Cancel() should not be invoked; instead the cancellation is reflected by the awaited value
-	GetDlgItem(IDC_BUTTON2)->SetWindowTextW(L"Cancel cooperatively");
-	auto task1 = RunOnWorker(LongWork, _stopSource.get_token()); // use the provided stop token; this way we dont need to manually cancel the task
-	auto task2 = RunOnWorker([] {
-		Sleep(10000); // intentionally using something long
-		}, _stopSource.get_token());
+	GetDlgItem(IDC_BUTTON2)->SetWindowText(_T("Cancel cooperatively"));
 
-	auto text = co_await task1;
-	GetDlgItem(IDC_STATIC)->SetWindowTextW(text.c_str());
-	GetDlgItem(IDC_BUTTON2)->SetWindowTextW(L"Cancel non-cooperatively");
+        co_await asyncrt::windows::resume_on_threadpool();
+	auto text = co_await LongWorkAsync(_stopSource.get_token());
+
+        co_await asyncrt::core::resume_on(ui_context);
+
+        GetDlgItem(IDC_STATIC)->SetWindowText(text.c_str());
+	GetDlgItem(IDC_BUTTON2)->SetWindowText(_T("Cancel non-cooperatively"));
 
 	// !! second task will still be executed here, so we also need to return
 	if (_stopSource.stop_requested())
@@ -225,15 +245,11 @@ IMPLEMENT_ASYNC_HANDLER(CAsyncUIWorkerMFCDlg, OnBnClickedButton1, WPARAM wp, LPA
 	    co_return;
 	}
 
-	try
-	{
-	    co_await task2;
-	    GetDlgItem(IDC_STATIC)->SetWindowText(L"Task2 completed");
-	}
-	catch (...)
-	{
-	    GetDlgItem(IDC_STATIC)->SetWindowText(L"Task2 has been cancelled but did not handle the cancellation (Timeout)");
-	}
+        co_await asyncrt::windows::resume_on_threadpool();
+	co_await LongWork2Async();
+
+        co_await asyncrt::core::resume_on(ui_context);
+        GetDlgItem(IDC_STATIC)->SetWindowText(_T("Task2 completed"));
 }
 
 void CAsyncUIWorkerMFCDlg::OnBnClickedButton2()

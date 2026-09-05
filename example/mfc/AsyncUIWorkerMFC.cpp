@@ -7,11 +7,11 @@
 #include "AsyncUIWorkerMFC.h"
 #include "AsyncUIWorkerMFCDlg.h"
 #include "AsyncUIWorker.h"
-#include "SynchronizationContext.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #define _CRTDBG_MAP_ALLOC
+#include <cstdlib>
 #include <crtdbg.h>
 #endif
 
@@ -47,7 +47,11 @@ CAsyncUIWorkerMFCApp theApp;
 
 BOOL CAsyncUIWorkerMFCApp::InitInstance()
 {
-	async::SynchronizationContext::SetCurrent(std::make_shared<WinAppSynchronizationContext>());
+#ifdef _DEBUG
+    AfxEnableMemoryTracking(TRUE);
+#endif
+        // set a message thread dispatcher for the current thread
+	asyncrt::windows::Dispatcher::set_current(std::make_shared<asyncrt::windows::MessageThreadDispatcher>());
 
 	// InitCommonControlsEx() is required on Windows XP if an application
 	// manifest specifies use of ComCtl32.dll version 6 or later to enable
@@ -110,6 +114,6 @@ BOOL CAsyncUIWorkerMFCApp::InitInstance()
 
 int CAsyncUIWorkerMFCApp::ExitInstance()
 {
-	async::SynchronizationContext::Current()->Shutdown();
+	asyncrt::windows::Dispatcher::current()->stop();
 	return CWinApp::ExitInstance();
 }
