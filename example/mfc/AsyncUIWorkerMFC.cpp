@@ -114,6 +114,6 @@ BOOL CAsyncUIWorkerMFCApp::InitInstance()
 
 int CAsyncUIWorkerMFCApp::ExitInstance()
 {
-	asyncrt::windows::Dispatcher::current()->stop();
+	asyncrt::windows::Dispatcher::shutdown(); // shutdown entire runtime
 	return CWinApp::ExitInstance();
 }

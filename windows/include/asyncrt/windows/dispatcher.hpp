@@ -29,7 +29,7 @@ class Dispatcher {
 public:
     virtual ~Dispatcher() = default;
 
-    void stop() noexcept;
+    virtual void stop() noexcept;
     bool is_stopped() const noexcept;
 
     // asyncrt::core::Context traits
@@ -42,6 +42,7 @@ public:
 
     static auto current() -> std::shared_ptr<Dispatcher>;
     static void set_current(const std::shared_ptr<Dispatcher> &dispatcher);
+    static void shutdown();
 
     virtual bool submit(DispatcherItem &&item) = 0;
 private:
@@ -94,6 +95,7 @@ public:
     ~ThreadPoolDispatcher() override;
 
     bool submit(DispatcherItem &&item) override;
+    void stop() noexcept override;
 
     static auto instance() -> std::shared_ptr<Dispatcher>;
 private:

@@ -1,6 +1,7 @@
 #include <cassert>
 #include <stdexcept>
 #include <future>
+#include <format>
 
 #include <asyncrt/windows/dispatcher.hpp>
 #include <tchar.h>
@@ -72,6 +73,15 @@ std::shared_ptr<Dispatcher> Dispatcher::current() {
 
 void Dispatcher::set_current(const std::shared_ptr<Dispatcher> &dispatcher){
     tls::local_dispatcher = dispatcher;
+}
+
+void Dispatcher::shutdown(){
+    if (tls::local_dispatcher) {
+        tls::local_dispatcher->stop();
+    }
+    if (const auto threadpool_ctx = ThreadPoolDispatcher::instance()) {
+        threadpool_ctx->stop();
+    }
 }
 
 void DispatcherItem::invoke() {
@@ -231,6 +241,10 @@ VOID CALLBACK ThreadPoolDispatcher::thread_proc([[maybe_unused]] PTP_CALLBACK_IN
         return;
     }
 
+#ifdef _DEBUG
+    std::ignore = SetThreadDescription(GetCurrentThread(), std::format(L"asyncrt.windows.ThreadPoolDispatcher/{:x}", reinterpret_cast<std::uintptr_t>(instance)).c_str());
+#endif
+
     const WorkPtr scoped_work{work, &CloseThreadpoolWork};
     const std::unique_ptr<ThreadProcData> scoped_context{static_cast<ThreadProcData*>(context)};
 
@@ -248,6 +262,8 @@ ThreadPoolDispatcher::ThreadPoolDispatcher() {
         // @TODO throw
         return;
     }
+    SetThreadpoolThreadMinimum(_pool.get(), 1); // at least one
+    SetThreadpoolThreadMaximum(_pool.get(), 16); // should be ok, we dont expect the system to get hammered by that many long running invokes
 
     _env.init(_pool);
 
@@ -301,6 +317,11 @@ bool ThreadPoolDispatcher::submit(DispatcherItem &&item) {
     std::ignore = context.release();
     SubmitThreadpoolWork(work);
     return true;
+}
+
+void ThreadPoolDispatcher::stop() noexcept {
+    Dispatcher::stop();
+    CloseThreadpoolCleanupGroupMembers(_cleanup_group.get(), TRUE, nullptr);
 }
 
 auto ThreadPoolDispatcher::instance() -> std::shared_ptr<Dispatcher>{
