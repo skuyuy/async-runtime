@@ -16,8 +16,11 @@ static auto default_dispatcher() -> Dispatcher* {
 }
 
 static void destroy_dispatcher(const Dispatcher *dispatcher) {
-    // dispatcher is automatically deleted by QCoreApplication
-    if (dispatcher == EventLoopDispatcher::application_dispatcher()) {
+    if (const auto event_loop_dispatcher = dynamic_cast<const EventLoopDispatcher *>(dispatcher);
+        event_loop_dispatcher && event_loop_dispatcher->parent()) {
+        // do not delete the event loop dispatcher if it has a parent
+        // if it does, the memory cleanup will be done by the Qt object tree
+        // this case is very likely to happen if any context is requested on the main application thread
         return;
     }
 
