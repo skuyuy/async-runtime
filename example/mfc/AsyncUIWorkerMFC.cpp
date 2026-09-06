@@ -51,7 +51,7 @@ BOOL CAsyncUIWorkerMFCApp::InitInstance()
     AfxEnableMemoryTracking(TRUE);
 #endif
         // set a message thread dispatcher for the current thread
-	asyncrt::windows::Dispatcher::set_current(std::make_shared<asyncrt::windows::MessageThreadDispatcher>());
+        const auto app_dispatcher = std::make_shared<asyncrt::windows::MessageThreadDispatcher>();
 
 	// InitCommonControlsEx() is required on Windows XP if an application
 	// manifest specifies use of ComCtl32.dll version 6 or later to enable
@@ -64,7 +64,9 @@ BOOL CAsyncUIWorkerMFCApp::InitInstance()
 	InitCommonControlsEx(&InitCtrls);
 
 	CWinApp::InitInstance();
-
+        app_dispatcher->start();
+        // set up the application dispatcher as the one for the current context
+        asyncrt::windows::Dispatcher::set_current(app_dispatcher);
 
 	AfxEnableControlContainer();
 
@@ -114,6 +116,6 @@ BOOL CAsyncUIWorkerMFCApp::InitInstance()
 
 int CAsyncUIWorkerMFCApp::ExitInstance()
 {
-	asyncrt::windows::Dispatcher::shutdown(); // shutdown entire runtime
+	asyncrt::windows::Dispatcher::shutdown_environment(); // shutdown entire runtime
 	return CWinApp::ExitInstance();
 }

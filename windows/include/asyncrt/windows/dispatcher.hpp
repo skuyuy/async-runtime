@@ -3,6 +3,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <deque>
 
 #define WIN32_MEAN_AND_LEAN
 #include <Windows.h>
@@ -11,16 +12,26 @@
 
 namespace asyncrt::windows {
 
-struct DispatcherItem {
-    std::move_only_function<void()> on_invoke; // invocation callback
-    std::move_only_function<void()> on_reject; // optional rejection callback
+class DispatcherItem {
+public:
+    DispatcherItem() = default;
+    explicit DispatcherItem(std::move_only_function<void()> callable, std::move_only_function<void()> destroy = {});
+    explicit DispatcherItem(std::coroutine_handle<> handle);
 
-    void invoke(); // cant make operator() because it will fuck with move semantics and constructors
-    void reject();
+    // @TODO utility -> DISABLE_COPYABLE(Class)
+    DispatcherItem(const DispatcherItem &) = delete;
+    DispatcherItem &operator=(const DispatcherItem &) = delete;
+
+    DispatcherItem(DispatcherItem &&other) noexcept;
+    DispatcherItem &operator=(DispatcherItem &&other) noexcept;
+
+    void operator()();
+
+    ~DispatcherItem();
+private:
+    std::move_only_function<void()> _callable; // invocation callback
+    std::move_only_function<void()> _destroy; // optional rejection callback
 };
-
-auto make_noop_dispatcher_item() -> DispatcherItem;
-auto make_dispatcher_item(std::coroutine_handle<> handle) -> DispatcherItem;
 
 // @TODO common windows header with exceptions etc
 
@@ -29,24 +40,26 @@ class Dispatcher {
 public:
     virtual ~Dispatcher() = default;
 
-    virtual void stop() noexcept;
-    bool is_stopped() const noexcept;
-
-    // asyncrt::core::Context traits
-
-    bool send(core::PostCoroutineTag, std::coroutine_handle<> handle);
-    bool send(std::move_only_function<void()> callable);
-
-    bool post(core::PostCoroutineTag, std::coroutine_handle<> handle);
-    bool post(std::move_only_function<void()> callable);
+    void start();
+    virtual void stop(bool clear_pending = false) noexcept;
+    [[nodiscard]] bool is_stopped() const noexcept;
 
     static auto current() -> std::shared_ptr<Dispatcher>;
     static void set_current(const std::shared_ptr<Dispatcher> &dispatcher);
-    static void shutdown();
+    static void shutdown_environment();
 
-    virtual bool submit(DispatcherItem &&item) = 0;
+    void run(DispatcherItem &&item);
+    bool submit(DispatcherItem &&item);
+protected:
+    virtual bool push(DispatcherItem &&item) = 0;
+
+    void process_pending();
+    void enqueue_pending(DispatcherItem &&item);
 private:
     std::atomic_bool _stopped{false};
+
+    std::mutex _mtx;
+    std::deque<DispatcherItem> _pending_items;
 };
 
 // dispatcher created on a win32 thread that pumps messages
@@ -57,13 +70,14 @@ public:
     // WPARAM: unused
     // LPARAM: pointer to DispatcherItem
     static UINT WM_DISPATCHER_SUBMIT_ITEM;
+    static UINT WM_DISPATCHER_PROCESS_PENDING;
     static ATOM WND_CLASS;
 
     MessageThreadDispatcher();
     ~MessageThreadDispatcher() override;
 
     [[nodiscard]]
-    bool submit(DispatcherItem &&item) override;
+    bool push(DispatcherItem &&item) override;
 private:
     HWND _handle{nullptr}; // handle to message window
 };
@@ -80,13 +94,17 @@ class ThreadPoolDispatcher final : public Dispatcher {
         void init(const PoolPtr &pool);
         ~ScopedEnvironment();
 
-        TP_CALLBACK_ENVIRON env;
+        TP_CALLBACK_ENVIRON env{};
         bool initialized{false};
     };
 
     struct ThreadProcData {
         DispatcherItem item;
         ThreadPoolDispatcher* dispatcher{nullptr};
+
+        void operator()() {
+            dispatcher->run(std::move(item));
+        }
     };
     static VOID CALLBACK thread_proc(PTP_CALLBACK_INSTANCE instance, PVOID context, PTP_WORK work);
     static VOID CALLBACK cleanup_group_callback(PVOID object, PVOID context);
@@ -94,8 +112,8 @@ public:
     ThreadPoolDispatcher();
     ~ThreadPoolDispatcher() override;
 
-    bool submit(DispatcherItem &&item) override;
-    void stop() noexcept override;
+    bool push(DispatcherItem &&item) override;
+    void stop(bool clear_pending) noexcept override;
 
     static auto instance() -> std::shared_ptr<Dispatcher>;
 private:
@@ -104,9 +122,5 @@ private:
     ScopedEnvironment _env;
     CleanupGroupPtr _cleanup_group{nullptr, nullptr};
 };
-
-inline auto resume_on_threadpool() {
-    return core::resume_on(ThreadPoolDispatcher::instance());
-}
 
 }

@@ -218,14 +218,14 @@ asyncrt::windows::Task<void> LongWork2Async() {
 
 //IMPLEMENT_ASYNC_HANDLER(CAsyncUIWorkerMFCDlg, OnBnClickedButton1, WPARAM wp, LPARAM lp)
 void CAsyncUIWorkerMFCDlg::OnBnClickedButton1() {
-    OnBnClickedButton1_Async();
+    OnBnClickedButton1_Async().start(); // immediately start
 }
 
 asyncrt::windows::Task<void> CAsyncUIWorkerMFCDlg::OnBnClickedButton1_Async() {
     /*
      * TODO put everything together in a RuntimeTraits<> trait struct so we can just do: asyncrt::current_context<WindowsRuntime>()
      */
-        const auto ui_context = asyncrt::windows::Dispatcher::current();
+        const asyncrt::windows::Context ui_context{}; // capture the current context
 
 	// Cooperative cancellation (the task handles cancellation by itself)
 	// -> Cancel() should not be invoked; instead the cancellation is reflected by the awaited value

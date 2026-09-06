@@ -5,6 +5,7 @@
 #include <coroutine>
 
 #include "context.hpp"
+#include "stats.hpp"
 
 namespace asyncrt::core {
 
@@ -26,13 +27,27 @@ inline constexpr TaskFlags DEFAULT_TASK_FLAGS {
 
 template<class T, Context ContextType>
 struct TaskPromiseBase {
-    [[nodiscard]] auto initial_suspend() const noexcept -> std::suspend_never;
+#ifdef _DEBUG
+    TaskPromiseBase() noexcept {
+        add_frame();
+    }
+
+    ~TaskPromiseBase() noexcept {
+        remove_frame();
+    }
+#endif
+
+    [[nodiscard]] auto initial_suspend() const noexcept -> std::suspend_always;
     auto final_suspend() const noexcept;
     auto get_return_object(this auto &self) noexcept -> Task<T, ContextType>;
     void unhandled_exception();
 
-    std::coroutine_handle<> _continuation;
-    std::shared_ptr<ContextType> _captured_ctx;
+    [[nodiscard]]
+    bool is_detached() const noexcept;
+    void detach() noexcept;
+
+    std::coroutine_handle<> _continuation{};
+    std::unique_ptr<ContextType> _captured_ctx;
     std::promise<T> _state;
     std::uint8_t _flags{DEFAULT_TASK_FLAGS};
 };
@@ -89,12 +104,13 @@ public:
     auto operator co_await() const & noexcept { return get_async(); }
     auto operator co_await() const && noexcept { return get_async(); }
 
-    // @TODO operator bool()
+    explicit operator bool() const noexcept { return static_cast<bool>(_handle); }
+    void start() noexcept;
 
     // allow a task to resume in the background and clean itself up later (nice for fire-and-forget tasks)
     // type-erased to allow std::noop_coroutine() -> never returns an invalid handle
     auto detach() noexcept -> std::coroutine_handle<>;
-    bool is_detached() const noexcept;
+    [[nodiscard]] bool is_detached() const noexcept;
 private:
     std::coroutine_handle<promise_type> _handle;
 };
@@ -102,7 +118,7 @@ private:
 // @TODO implementation header?
 
 template <class T, Context ContextType> void Task<T, ContextType>::destroy() noexcept {
-    if (!_handle || (_handle.promise()._flags & detail::TASK_DETACHED) || !_handle.done()) {
+    if (!_handle || (_handle.promise().is_detached())) {
         return;
     }
 
@@ -134,6 +150,15 @@ auto Task<T, ContextType>::get_async() const noexcept {
     return detail::TaskAwaiter<T, ContextType>{ _handle };
 }
 
+template<class T, Context ContextType>
+void Task<T, ContextType>::start() noexcept {
+    if (_handle) {
+        auto &p = _handle.promise();
+        p.detach();
+        _handle.resume();
+    }
+}
+
 template <class T, Context ContextType>
 auto Task<T, ContextType>::detach() noexcept-> std::coroutine_handle<> {
     if (!_handle) {
@@ -141,7 +166,7 @@ auto Task<T, ContextType>::detach() noexcept-> std::coroutine_handle<> {
     }
 
     auto handle = std::exchange(_handle, {}); // give up ownership now
-    handle.promise()._flags |= detail::TASK_DETACHED;
+    handle.promise().detach();
     return handle;
 }
 
@@ -156,7 +181,7 @@ template <class T, Context ContextType> bool Task<T, ContextType>::is_detached()
 namespace detail {
 
 template <class T, Context ContextType>
-auto TaskPromiseBase<T, ContextType>::initial_suspend() const noexcept -> std::suspend_never {
+auto TaskPromiseBase<T, ContextType>::initial_suspend() const noexcept -> std::suspend_always {
     // tasks always start on the calling thread
     // rescheduling should be done by a specialized awaiter (-> asyncrt::core)
     return {};
@@ -174,9 +199,9 @@ auto TaskPromiseBase<T, ContextType>::final_suspend() const noexcept{
 
             auto& p = handle.promise();
             if (p._continuation) {
-                if ((p._flags & TASK_RESUME_ON_CAPTURED_CONTEXT) && p._captured_ctx && p._captured_ctx != ContextType::current()) {
-                    // the captured context is different from the current one, post the continuation there
-                    p._captured_ctx->post(p._continuation);
+                if ((p._flags & TASK_RESUME_ON_CAPTURED_CONTEXT) && p._captured_ctx) {
+                    // post the continuation on the captured context if that flag is set
+                    p._captured_ctx->post(post_coroutine, p._continuation);
                     return std::noop_coroutine();
                 }
                 // otherwise, continue with the continuation
@@ -204,6 +229,14 @@ Task<T, ContextType> TaskPromiseBase<T, ContextType>::get_return_object(this aut
 template<class T, Context ContextType>
 void TaskPromiseBase<T, ContextType>::unhandled_exception() {
     _state.set_exception(std::current_exception());
+}
+
+template <class T, Context ContextType> bool TaskPromiseBase<T, ContextType>::is_detached() const noexcept{
+    return _flags & TASK_DETACHED;
+}
+
+template <class T, Context ContextType> void TaskPromiseBase<T, ContextType>::detach() noexcept {
+    _flags |= TASK_DETACHED;
 }
 
 template <class T, Context ContextType>
@@ -240,11 +273,12 @@ auto TaskAwaiter<T, ContextType>::await_suspend(std::coroutine_handle<InnerPromi
     auto &p = _handle.promise();
     p._continuation = handle;
     // until the first suspension, the task owns itself. after that, it gets detached
-    p._flags |= TASK_DETACHED;
-    // capture the current context so the final awaiter can resume the original frame on it once the awaited task is done
-    // if we manually set a context already, keep it
+    // p.detach();
+    // capture the context
+    // if we manually set a context already, keep it instead
+    // implementations need to handle all the thread-locality stuff like selecting a proper context type
     if (!p._captured_ctx) {
-        p._captured_ctx = ContextType::current();
+        p._captured_ctx = std::make_unique<ContextType>();
     }
 
     return _handle;

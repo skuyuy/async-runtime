@@ -12,7 +12,20 @@ class CAsyncUIWorkerMFCDlg : public CDialogEx
 {
 // Construction
 public:
-	CAsyncUIWorkerMFCDlg(CWnd* pParent = nullptr);	// standard constructor
+    // @TODO
+    // class CAsyncUIWorkerMFCDlg : public CDialogEx, asyncrt::Lifetime<CAsyncUIWorkerMFCDlg>
+    // Task<void> OnButton1BnClicked(asyncrt::Lifetime<CAsyncUIWorkerMFCDlg> dlg) {
+    //     auto dialog = dlg.weak(); // weak ptr to lifetime token
+    //     // async work...
+    //     if(weak.expired()) co_return;
+    // }
+    // or as member:
+    // Task<void> CAsyncUIWorkerMFCDlg::OnButton1BnClicked() {
+    //     auto dialog = weak();
+    //     if(weak.expired()) co_return;
+    // }
+
+    CAsyncUIWorkerMFCDlg(CWnd* pParent = nullptr);	// standard constructor
 
 // Dialog Data
 #ifdef AFX_DESIGN_TIME

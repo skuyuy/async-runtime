@@ -17,54 +17,8 @@ thread_local std::shared_ptr<Dispatcher> local_dispatcher;
 
 }
 
-bool Dispatcher::send(core::PostCoroutineTag, std::coroutine_handle<> handle) {
-    std::promise<bool> sig;
-
-    auto invoke = [&sig, handle] {
-        handle.resume();
-        sig.set_value(true);
-    };
-
-    auto reject = [&sig, handle] {
-        handle.destroy();
-        sig.set_value(false);
-    };
-
-    if (submit(DispatcherItem{invoke, reject})) {
-        return sig.get_future().get();
-    }
-    return false;
-}
-
-bool Dispatcher::send(std::move_only_function<void()> callable) {
-    std::promise<bool> sig;
-
-    auto invoke = [&sig, callable = std::move(callable)] mutable {
-        callable();
-        sig.set_value(true);
-    };
-    auto reject = [&sig] {
-        sig.set_value(false);
-    };
-
-    if (submit(DispatcherItem{std::move(invoke), reject})) {
-        return sig.get_future().get();
-    }
-    return false;
-}
-
-bool Dispatcher::post(core::PostCoroutineTag, std::coroutine_handle<> handle) {
-    return submit(make_dispatcher_item(handle));
-}
-
-bool Dispatcher::post(std::move_only_function<void()> callable) {
-    return submit(DispatcherItem{ .on_invoke = std::move(callable) });
-}
-
 std::shared_ptr<Dispatcher> Dispatcher::current() {
     // using a global thread-pool as a fallback, if no local dispatcher is configured
-    static std::shared_ptr<ThreadPoolDispatcher> threadpool_dispatcher;
-
     if(!tls::local_dispatcher) {
         return ThreadPoolDispatcher::instance();
     }
@@ -75,67 +29,131 @@ void Dispatcher::set_current(const std::shared_ptr<Dispatcher> &dispatcher){
     tls::local_dispatcher = dispatcher;
 }
 
-void Dispatcher::shutdown(){
+void Dispatcher::shutdown_environment(){
+    // stop all dispatchers and delete the thread local one
+    // the threadpool dispatcher will be cleaned up at static shutdown and should persist
     if (tls::local_dispatcher) {
-        tls::local_dispatcher->stop();
+        tls::local_dispatcher->stop(true);
+        tls::local_dispatcher = nullptr;
     }
     if (const auto threadpool_ctx = ThreadPoolDispatcher::instance()) {
-        threadpool_ctx->stop();
+        threadpool_ctx->stop(true);
     }
 }
 
-void DispatcherItem::invoke() {
-    assert(on_invoke);
-    if (on_invoke) {
-        on_invoke();
+void Dispatcher::run(DispatcherItem &&item) {
+    if (!is_stopped()) { // it could be that inbetween submit and run, the dispatcher was stopped
+        item();
+        return;
+    }
+
+    enqueue_pending(std::forward<DispatcherItem>(item));
+}
+
+void Dispatcher::process_pending() {
+    std::unique_lock lock{_mtx};
+    while (!_pending_items.empty()) {
+        auto item = std::move(_pending_items.front());
+        _pending_items.pop_front();
+        item();
     }
 }
 
-void DispatcherItem::reject() {
-    assert(on_reject);
-    if (on_reject) {
-        on_reject();
-    }
+void Dispatcher::enqueue_pending(DispatcherItem &&item){
+    std::unique_lock lock{_mtx};
+    _pending_items.push_back(std::forward<DispatcherItem>(item));
 }
 
-auto make_noop_dispatcher_item()-> DispatcherItem {
-    return {
-        .on_invoke = []{},
-        .on_reject = []{},
-    };
+DispatcherItem::DispatcherItem(std::move_only_function<void()> callable, std::move_only_function<void()> destroy)
+    : _callable(std::move(callable))
+    , _destroy(std::move(destroy)) {
 }
 
-auto make_dispatcher_item(std::coroutine_handle<> handle)-> DispatcherItem {
+DispatcherItem::DispatcherItem(std::coroutine_handle<> handle) {
     assert(handle);
     if (!handle) {
-        return make_noop_dispatcher_item();
+        _callable = []{};
+        _destroy = []{};
+        return;
     }
 
     // if the dispatcher rejects the handle, it must be cleaned up
     // example scenario: stopping the runtime while some tasks are still in-flight
     // if the runtime is stopped, it rejects the submitted items
     // in order for the handles to not leak, we need to destroy them if they are rejected
-    return {
-        .on_invoke = [handle] { handle.resume(); },
-        .on_reject = [handle] { handle.destroy(); }
+    // therefore we need to share the object
+
+    auto shared_handle = std::make_shared<std::coroutine_handle<>>(handle);
+    _callable = [shared_handle] {
+        shared_handle->resume();
+        *shared_handle = {}; // replace the underlying object with an empty handle since it is now detached
+    };
+
+    _destroy = [shared_handle] {
+        if (*shared_handle) {
+            // only destroy the handle if it is still valid (-> not resumed and reset by _callable)
+            shared_handle->destroy();
+        }
     };
 }
 
-void Dispatcher::stop() noexcept {
+DispatcherItem & DispatcherItem::operator=(DispatcherItem &&other) noexcept {
+    // invalidate the other function wrappers and replace them with noops
+    _callable = std::exchange(other._callable, {});
+    _destroy = std::exchange(other._destroy, {});
+    return *this;
+}
+
+void DispatcherItem::operator()() {
+    if (_callable) {
+        _callable();
+    }
+}
+
+DispatcherItem::DispatcherItem(DispatcherItem &&other) noexcept
+    : _callable(std::move(other._callable))
+    , _destroy(std::move(other._destroy)) {
+}
+
+DispatcherItem::~DispatcherItem() {
+    if (_destroy) {
+        _destroy();
+    }
+}
+
+void Dispatcher::start() {
+    // process pending /just to be sure/
+    process_pending();
+    // if we were stopped, flip
+    if (_stopped) {
+        _stopped = false;
+    }
+}
+
+bool Dispatcher::submit(DispatcherItem &&item){
+    if (!is_stopped()) {
+        return push(std::forward<DispatcherItem>(item));
+    }
+
+    std::unique_lock lock{_mtx};
+    _pending_items.push_back(std::move(item));
+    return false;
+}
+
+
+void Dispatcher::stop(bool clear_pending) noexcept {
     _stopped = true;
+
+    // give other threads the chance to complete pending push before we lock
+    std::unique_lock lock{_mtx};
+    _pending_items.clear();
 }
 
 bool Dispatcher::is_stopped() const noexcept {
     return _stopped;
 }
 
-bool MessageThreadDispatcher::submit(DispatcherItem &&item) {
-    if (is_stopped()) {
-        // exit scope here
-        item.reject();
-        return false;
-    }
-
+bool MessageThreadDispatcher::push(DispatcherItem &&item) {
     // release ownership and post to the dispatcher window
     // the item is move-constructed on the heap to make it "transient"
     PostMessage(_handle, WM_DISPATCHER_SUBMIT_ITEM, 0, reinterpret_cast<LPARAM>(new DispatcherItem{std::forward<DispatcherItem>(item)}));
@@ -162,12 +180,7 @@ LRESULT __stdcall MessageThreadDispatcher::wnd_proc(HWND hwnd, UINT msg, WPARAM 
 
         // take ownership
         const std::unique_ptr<DispatcherItem> item{reinterpret_cast<DispatcherItem*>(lp)};
-        if (!instance->is_stopped()) {
-            item->invoke();
-        } else {
-            item->reject();
-        }
-
+        instance->run(std::move(*(item))); // move so item is reset
         return 0;
     }
 
@@ -247,13 +260,7 @@ VOID CALLBACK ThreadPoolDispatcher::thread_proc([[maybe_unused]] PTP_CALLBACK_IN
 
     const WorkPtr scoped_work{work, &CloseThreadpoolWork};
     const std::unique_ptr<ThreadProcData> scoped_context{static_cast<ThreadProcData*>(context)};
-
-    if (scoped_context->dispatcher->is_stopped()) {
-        scoped_context->item.reject();
-        return;
-    }
-
-    scoped_context->item.invoke();
+    (*scoped_context)();
 }
 
 ThreadPoolDispatcher::ThreadPoolDispatcher() {
@@ -283,9 +290,8 @@ VOID CALLBACK ThreadPoolDispatcher::cleanup_group_callback(PVOID object, [[maybe
         return;
     }
 
-    // reject all the pending items
-    const std::unique_ptr<ThreadProcData> proc_data(static_cast<ThreadProcData*>(object));
-    proc_data->item.reject();
+    // delete the context item
+    delete static_cast<ThreadProcData*>(object);
 }
 
 ThreadPoolDispatcher::~ThreadPoolDispatcher() {
@@ -293,12 +299,7 @@ ThreadPoolDispatcher::~ThreadPoolDispatcher() {
     CloseThreadpoolCleanupGroupMembers(_cleanup_group.get(), TRUE, nullptr);
 }
 
-bool ThreadPoolDispatcher::submit(DispatcherItem &&item) {
-    if (is_stopped()) {
-        item.reject();
-        return false;
-    }
-
+bool ThreadPoolDispatcher::push(DispatcherItem &&item) {
     auto context = std::make_unique<ThreadProcData>(std::forward<DispatcherItem>(item), this);
 
     const std::unique_lock lock{_pool_mtx}; // now accessing the pool
@@ -310,7 +311,9 @@ bool ThreadPoolDispatcher::submit(DispatcherItem &&item) {
 
     assert(work != nullptr);
     if (!work) {
-        context->item.reject();
+        // failed to create the work so this will be moved to pending
+        // this case is very unlikely
+        enqueue_pending(std::forward<DispatcherItem>(item));
         return false;
     }
 
@@ -319,12 +322,12 @@ bool ThreadPoolDispatcher::submit(DispatcherItem &&item) {
     return true;
 }
 
-void ThreadPoolDispatcher::stop() noexcept {
-    Dispatcher::stop();
+void ThreadPoolDispatcher::stop(bool clear_pending) noexcept {
+    Dispatcher::stop(clear_pending);
     CloseThreadpoolCleanupGroupMembers(_cleanup_group.get(), TRUE, nullptr);
 }
 
-auto ThreadPoolDispatcher::instance() -> std::shared_ptr<Dispatcher>{
+auto ThreadPoolDispatcher::instance() -> std::shared_ptr<Dispatcher> {
     static std::shared_ptr<ThreadPoolDispatcher> instance;
     if (!instance) {
         instance = std::make_shared<ThreadPoolDispatcher>();
