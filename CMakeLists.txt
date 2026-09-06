@@ -7,5 +7,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_subdirectory(core)
 # TODO if windows
 add_subdirectory(windows)
-
+add_subdirectory(qt)
 add_subdirectory(example/mfc)
+add_subdirectory(example/qt)

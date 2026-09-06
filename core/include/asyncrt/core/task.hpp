@@ -15,8 +15,9 @@ class Task;
 namespace detail {
 
 enum TaskFlags : std::uint8_t { // increase size whenever necessary
-    TASK_DETACHED = 0x1,
-    TASK_RESUME_ON_CAPTURED_CONTEXT = 0x2,
+    TASK_DETACHED = 1 << 0,
+    TASK_RESUME_ON_CAPTURED_CONTEXT = 1 << 1,
+    TASK_CANCELLED = 1 << 2,
     // more options
 };
 
@@ -96,6 +97,7 @@ public:
 
     explicit operator bool() const noexcept { return static_cast<bool>(_handle); }
     void start() noexcept;
+    void cancel() noexcept;
 
     // allow a task to resume in the background and clean itself up later (nice for fire-and-forget tasks)
     // type-erased to allow std::noop_coroutine() -> never returns an invalid handle
@@ -146,6 +148,13 @@ void Task<T, ContextType>::start() noexcept {
         auto &p = _handle.promise();
         p.detach();
         _handle.resume();
+    }
+}
+
+template <class T, Context ContextType> void Task<T, ContextType>::cancel() noexcept {
+    if (_handle) {
+        auto &p = _handle.promise();
+        p._flags |= detail::TASK_CANCELLED;
     }
 }
 
