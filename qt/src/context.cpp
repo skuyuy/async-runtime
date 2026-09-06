@@ -51,4 +51,8 @@ auto resume_on_threadpool() -> core::ResumeOnAwaitable<Context> {
     return core::resume_on(Context{std::make_shared<ThreadPoolDispatcher>()});
 }
 
+auto resume_on_application_thread() -> core::ResumeOnAwaitable<Context> {
+    return core::resume_on(Context{std::shared_ptr<EventLoopDispatcher>(EventLoopDispatcher::application_dispatcher(), &destroy_dispatcher)});
+}
+
 }

@@ -7,6 +7,7 @@ find_package(
     Qt${QT_MAJOR_VERSION}
     COMPONENTS
         Widgets
+        Network
     CONFIG
     REQUIRED
     PATHS
@@ -30,6 +31,7 @@ target_link_libraries(
         asyncrt-example-qt
         PUBLIC
             Qt${QT_MAJOR_VERSION}::Widgets
+            Qt${QT_MAJOR_VERSION}::Network
             asyncrt-qt
             asyncrt-core
 )

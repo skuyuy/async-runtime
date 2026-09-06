@@ -23,5 +23,6 @@ private:
 };
 
 auto resume_on_threadpool() -> core::ResumeOnAwaitable<Context>;
+auto resume_on_application_thread() -> core::ResumeOnAwaitable<Context>;
 
 }
