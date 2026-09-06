@@ -4,7 +4,6 @@ target_include_directories(
         asyncrt-win
         PUBLIC
             ${CMAKE_CURRENT_SOURCE_DIR}/include
-            #${CMAKE_SOURCE_DIR}/core/include
 )
 
 set(TARGET_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include/asyncrt/windows)

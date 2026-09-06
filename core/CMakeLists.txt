@@ -1,8 +1,8 @@
-add_library(asyncrt-core STATIC)
+add_library(asyncrt-core INTERFACE)
 
 target_include_directories(
         asyncrt-core
-        PUBLIC
+        INTERFACE
             ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
@@ -11,18 +11,10 @@ set(TARGET_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 target_sources(
         asyncrt-core
-        PUBLIC
+        INTERFACE
         FILE_SET HEADERS
         FILES
             ${TARGET_INCLUDE_DIR}/context.hpp
             ${TARGET_INCLUDE_DIR}/resume_on.hpp
-            ${TARGET_INCLUDE_DIR}/stats.hpp
             ${TARGET_INCLUDE_DIR}/task.hpp
 )
-
-target_sources(
-        asyncrt-core
-        PUBLIC
-            ${TARGET_SOURCE_DIR}/stats.cpp
-)
-

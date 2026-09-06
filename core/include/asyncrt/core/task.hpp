@@ -5,7 +5,7 @@
 #include <coroutine>
 
 #include "context.hpp"
-#include "stats.hpp"
+#include "detail/coro_utils.hpp"
 
 namespace asyncrt::core {
 
@@ -27,16 +27,6 @@ inline constexpr TaskFlags DEFAULT_TASK_FLAGS {
 
 template<class T, Context ContextType>
 struct TaskPromiseBase {
-#ifdef _DEBUG
-    TaskPromiseBase() noexcept {
-        add_frame();
-    }
-
-    ~TaskPromiseBase() noexcept {
-        remove_frame();
-    }
-#endif
-
     [[nodiscard]] auto initial_suspend() const noexcept -> std::suspend_always;
     auto final_suspend() const noexcept;
     auto get_return_object(this auto &self) noexcept -> Task<T, ContextType>;
