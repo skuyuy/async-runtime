@@ -18,8 +18,8 @@
 |------------------------------------|--------------------------------------------------------------|---------|
 | Foundation                         | Foundational implementation for tasks, task contexts, etc... | Done    |
 | Coroutine support                  | Supports the asynchronous invokation of C++20 coroutines     | Done    |
-| Cancellation                       | Support to cancel tasks in-flight                            | Planned |
-| Integration with `std::stop_token` | Support cancellation with `std::stop_token`                  | Planned |
+| Cancellation                       | Support to cancel tasks in-flight                            | Done    |
+| Integration with `std::stop_token` | Support cancellation with `std::stop_token`                  | Done    |
 | QML support                        | Extend the `qt` module to be able to integrate with QML      | Planned |
 
 ## Examples
