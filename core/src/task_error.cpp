@@ -2,9 +2,11 @@
 
 namespace asyncrt::core {
 
+
+
 struct TaskErrorCategory final : std::error_category {
     [[nodiscard]]
-    auto name() const noexcept -> const char* override { return "TaskError"; }
+    auto name() const noexcept -> const char* override { return ERROR_CATEGORY_NAME.data(); }
 
     [[nodiscard]]
     auto message(const int code) const -> std::string override {
@@ -37,13 +39,8 @@ TaskException::TaskException(const TaskError code, const std::string& message)
     , code(code) {
 }
 
-}
-
-namespace std {
-
-auto make_error_code(const asyncrt::core::TaskError error) -> error_code {
-    static asyncrt::core::TaskErrorCategory cat;
-    return error_code{std::to_underlying(error), cat};
+auto make_error_code(const TaskError error) -> std::error_code {
+    return std::error_code{std::to_underlying(error), error_category};
 }
 
 }

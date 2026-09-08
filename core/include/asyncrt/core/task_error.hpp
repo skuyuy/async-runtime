@@ -4,6 +4,8 @@
 
 namespace asyncrt::core {
 
+inline constexpr std::string_view ERROR_CATEGORY_NAME{"asyncrt.core.TaskError"};
+
 enum class TaskError {
     unknown = 1,
     invalid_handle,
@@ -45,13 +47,9 @@ struct TaskException : std::runtime_error {
     }
 };
 
-}
+auto make_error_code(TaskError) -> std::error_code;
 
-namespace std {
+}
 
 template<>
-struct is_error_code_enum<asyncrt::core::TaskError> : std::true_type {};
-
-auto make_error_code(asyncrt::core::TaskError) -> error_code;
-
-}
+struct std::is_error_code_enum<asyncrt::core::TaskError> : std::true_type {};

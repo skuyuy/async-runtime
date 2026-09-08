@@ -5,11 +5,13 @@
 #include <coroutine>
 #include <expected>
 #include <utility>
+#include <stop_token>
 
 #include "detail/coro_utils.hpp"
 #include "context.hpp"
 #include "task_error.hpp"
 #include "task_flags.hpp"
+#include "task_traits.hpp"
 
 namespace asyncrt::core {
 
@@ -173,13 +175,18 @@ auto Task<T, ContextType>::unwrap(){
 }
 
 template <class T, Context ContextType>
-auto Task<T, ContextType>::try_unwrap() -> std::expected<T, std::error_code>{
+auto Task<T, ContextType>::try_unwrap() -> std::expected<T, std::error_code> {
     if (!_handle) {
         return std::unexpected{TaskError::invalid_handle};
     }
 
     try {
-        return _handle.promise().get();
+        if constexpr (std::is_void_v<T>) {
+            _handle.promise().get();
+            return {};
+        } else {
+            return _handle.promise().get();
+        }
     } catch (const TaskException &task_err) {
         return std::unexpected{task_err.code};
     } catch (const std::system_error &sys_err) {

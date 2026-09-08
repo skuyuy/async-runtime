@@ -21,9 +21,9 @@ public:
     asyncrt::qt::Task<void> onStartButtonClickedAsync();
 
     auto weak_ref() -> std::weak_ptr<char> { return {_lifetime}; }
-    void onTaskExceptionOccurred(const std::exception &e);
+    void onTaskErrorOccurred(const std::error_code &err);
 signals:
-    void taskExceptionOccurred(const std::exception &e);
+    void taskErrorOccurred(const std::error_code &e);
 private:
     std::stop_source _stop_source;
     std::shared_ptr<char> _lifetime;

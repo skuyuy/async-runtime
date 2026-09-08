@@ -20,7 +20,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(ui->startButton, &QPushButton::clicked, this, &MainWindow::onStartButtonClicked);
     connect(ui->cancelButton, &QPushButton::clicked, this, &MainWindow::onCancelButtonClicked);
-    connect(this, &MainWindow::taskExceptionOccurred, this, &MainWindow::onTaskExceptionOccurred, Qt::QueuedConnection); // signal can come from different thread
+    connect(this, &MainWindow::taskErrorOccurred, this, &MainWindow::onTaskErrorOccurred, Qt::QueuedConnection); // signal can come from different thread
 }
 
 MainWindow::~MainWindow() {
@@ -33,12 +33,9 @@ void MainWindow::onStartButtonClicked() {
 
     QThreadPool::globalInstance()->start([this, task = std::move(task)] mutable {
         const auto lifetime = weak_ref();
-        try {
-            task.unwrap();
-        } catch (const std::exception &e) {
-            if (!lifetime.expired()) {
-                emit taskExceptionOccurred(e);
-            }
+        if (const auto result = task.try_unwrap();
+            !result && !lifetime.expired()) {
+            emit taskErrorOccurred(result.error());
         }
     });
 }
@@ -107,6 +104,10 @@ asyncrt::qt::Task<void> MainWindow::onStartButtonClickedAsync() {
     // disconnect(downloadProgressConnection);
 }
 
-void MainWindow::onTaskExceptionOccurred(const std::exception &e){
-    QMessageBox::critical(this, "Task Exception", e.what());
+void MainWindow::onTaskErrorOccurred(const std::error_code &err){
+    QMessageBox::critical(this, "Task Exception", QString{"[%1]: %2"}.arg(err.category().name(), QString::fromStdString(err.message())));
+
+    if (err.category().name() == asyncrt::core::ERROR_CATEGORY_NAME) {
+        _stop_source = {};
+    }
 }
