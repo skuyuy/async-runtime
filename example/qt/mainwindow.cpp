@@ -7,6 +7,7 @@
 #include <QNetworkReply>
 #include <QMetaEnum>
 #include <QMessageBox>
+#include <QThreadPool>
 #include <expected>
 
 #include "asyncrt/qt/context.hpp"
@@ -19,6 +20,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(ui->startButton, &QPushButton::clicked, this, &MainWindow::onStartButtonClicked);
     connect(ui->cancelButton, &QPushButton::clicked, this, &MainWindow::onCancelButtonClicked);
+    connect(this, &MainWindow::taskExceptionOccurred, this, &MainWindow::onTaskExceptionOccurred, Qt::QueuedConnection); // signal can come from different thread
 }
 
 MainWindow::~MainWindow() {
@@ -26,12 +28,23 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::onStartButtonClicked() {
-    onStartButtonClickedAsync().start();
+    auto task = onStartButtonClickedAsync();
+    task.start(_stop_source.get_token());
+
+    QThreadPool::globalInstance()->start([this, task = std::move(task)] mutable {
+        const auto lifetime = weak_ref();
+        try {
+            task.unwrap();
+        } catch (const std::exception &e) {
+            if (!lifetime.expired()) {
+                emit taskExceptionOccurred(e);
+            }
+        }
+    });
 }
 
 void MainWindow::onCancelButtonClicked() {
-    // @TODO cancellation support for tasks via internal stop-state (in flags)
-    // still needs to be implemented
+    _stop_source.request_stop();
 }
 
 asyncrt::qt::Task<std::expected<QString, QString>> downloadFile() {
@@ -70,13 +83,15 @@ asyncrt::qt::Task<std::expected<QString, QString>> downloadFile() {
 asyncrt::qt::Task<void> MainWindow::onStartButtonClickedAsync() {
     const auto weak = weak_ref(); // used to check if dialog expired
     // capture current context
-    const asyncrt::qt::Context ui_ctx{}; // @TODO this needs to capture the application dispatcher somehow. check for application thread and if so, return application dispatcher
+    const asyncrt::qt::Context ui_ctx{};
 
     ui->console->append("Task started");
 
     // this is run on a worker thread
     co_await asyncrt::qt::resume_on_threadpool();
-    const auto text = co_await downloadFile();
+    //const auto text = co_await downloadFile();
+    QThread::msleep(5000);
+    const std::expected<QString, QString> text{"Foo"};
     co_await asyncrt::qt::resume_on_application_thread();
     if (weak.expired()) {
         co_return;
@@ -90,4 +105,8 @@ asyncrt::qt::Task<void> MainWindow::onStartButtonClickedAsync() {
 
     // const auto downloadProgressConnection = connect(reply, &QNetworkReply::downloadProgress, this, &MainWindow::onDownloadProgress, Qt::QueuedConnection);
     // disconnect(downloadProgressConnection);
+}
+
+void MainWindow::onTaskExceptionOccurred(const std::exception &e){
+    QMessageBox::critical(this, "Task Exception", e.what());
 }

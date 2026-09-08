@@ -5,6 +5,7 @@ set(Qt6_DIR $ENV{Qt${QT_MAJOR_VERSION}_BASE_DIR})
 find_package(
         Qt${QT_MAJOR_VERSION}
         COMPONENTS
+            Core
             Gui
         CONFIG
         REQUIRED

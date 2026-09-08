@@ -14,7 +14,9 @@ target_sources(
         INTERFACE
         FILE_SET HEADERS
         FILES
+            ${TARGET_INCLUDE_DIR}/detail/coro_utils.hpp
             ${TARGET_INCLUDE_DIR}/context.hpp
             ${TARGET_INCLUDE_DIR}/resume_on.hpp
             ${TARGET_INCLUDE_DIR}/task.hpp
+            ${TARGET_INCLUDE_DIR}/task_flags.hpp
 )

@@ -4,6 +4,7 @@
 #include <concepts>
 #include <coroutine>
 
+#include "detail/coro_utils.hpp"
 #include "context.hpp"
 #include "detail/coro_utils.hpp"
 
@@ -12,50 +13,70 @@ namespace asyncrt::core {
 template<class T, Context ContextType>
 class Task;
 
+struct Cancelled : std::runtime_error {
+    Cancelled()
+        : std::runtime_error("Task has been cancelled")
+    {}
+};
+
 namespace detail {
 
-enum TaskFlags : std::uint8_t { // increase size whenever necessary
-    TASK_DETACHED = 1 << 0,
-    TASK_RESUME_ON_CAPTURED_CONTEXT = 1 << 1,
-    TASK_CANCELLED = 1 << 2,
-    // more options
-};
-
-// default flags; will resume on captured context by default
-inline constexpr TaskFlags DEFAULT_TASK_FLAGS {
-    TASK_RESUME_ON_CAPTURED_CONTEXT
-};
-
 template<class T, Context ContextType>
+struct FinalAwaiter {
+    FORCE_SUSPEND
+    NOOP_RESUME
+
+    auto await_suspend(std::coroutine_handle<typename Task<T, ContextType>::promise_type> handle) noexcept -> std::coroutine_handle<>;
+};
+
+template<Context ContextType>
 struct TaskPromiseBase {
     [[nodiscard]] auto initial_suspend() const noexcept -> std::suspend_always;
-    auto final_suspend() const noexcept;
-    auto get_return_object(this auto &self) noexcept -> Task<T, ContextType>;
-    void unhandled_exception();
 
-    [[nodiscard]]
-    bool is_detached() const noexcept;
-    void detach() noexcept;
+    void assign_stop_token(std::stop_token st);
+    [[nodiscard]] bool is_cancelled() const noexcept;
 
+    // cancellation from external sources (like std::jthread, std::stop_source)
+    std::stop_token _st;
+    std::optional<std::stop_callback<std::function<void()>>> _stop_callback;
+
+    // internal promise state
     std::coroutine_handle<> _continuation{};
-    std::unique_ptr<ContextType> _captured_ctx;
-    std::promise<T> _state;
-    std::uint8_t _flags{DEFAULT_TASK_FLAGS};
+    std::optional<ContextType> _captured_ctx;
+    std::atomic<std::underlying_type_t<TaskFlags>> _flags{DEFAULT_TASK_FLAGS}; // flags including detached state, internal cancellation state
+    std::condition_variable_any _state_cv; // used to notify changes in coroutine state (currently only unfinished -> finished)
 };
 
 template<class T, Context ContextType>
-struct ValueTaskPromise : TaskPromiseBase<T, ContextType> {
+struct ValueTaskPromise : TaskPromiseBase<ContextType> {
+    auto get_return_object() noexcept -> Task<T, ContextType>;
+    auto final_suspend() const noexcept -> FinalAwaiter<T, ContextType> { return {}; }
+    void unhandled_exception();
     template<class From>
         requires std::constructible_from<T, From&&>
     void yield_value(From &&from);
     template<class From>
         requires std::constructible_from<T, From&&>
     void return_value(From &&from);
+
+    auto get() -> T&&;
+    void wait();
+
+    std::promise<T> _state;
+    std::future<T> _future{_state.get_future()};
 };
 
 template<Context ContextType>
-struct VoidTaskPromise : TaskPromiseBase<void, ContextType> {
-    void return_void();
+struct VoidTaskPromise : TaskPromiseBase<ContextType> {
+    auto get_return_object() noexcept -> Task<void, ContextType>;
+    auto final_suspend() const noexcept -> FinalAwaiter<void, ContextType> { return {}; }
+    void unhandled_exception();
+    void return_void() noexcept;
+    void get();
+    void wait();
+
+    std::atomic_bool _finished;
+    std::exception_ptr _exception;
 };
 
 template<class T, class ContextType>
@@ -96,13 +117,17 @@ public:
     auto operator co_await() const && noexcept { return get_async(); }
 
     explicit operator bool() const noexcept { return static_cast<bool>(_handle); }
-    void start() noexcept;
+    void start(std::stop_token st) noexcept;
+
     void cancel() noexcept;
+    [[nodiscard]]
+    bool is_canceled() noexcept;
 
     // allow a task to resume in the background and clean itself up later (nice for fire-and-forget tasks)
     // type-erased to allow std::noop_coroutine() -> never returns an invalid handle
     auto detach() noexcept -> std::coroutine_handle<>;
-    [[nodiscard]] bool is_detached() const noexcept;
+    [[nodiscard]]
+    bool is_detached() const noexcept;
 private:
     std::coroutine_handle<promise_type> _handle;
 };
@@ -110,7 +135,7 @@ private:
 // @TODO implementation header?
 
 template <class T, Context ContextType> void Task<T, ContextType>::destroy() noexcept {
-    if (!_handle || (_handle.promise().is_detached())) {
+    if (!_handle || (_handle.promise()._flags & TASK_DETACHED)) {
         return;
     }
 
@@ -137,25 +162,71 @@ auto Task<T, ContextType>::operator=(Task &&other) noexcept -> Task& {
     return *this;
 }
 
+template <class T, Context ContextType>
+auto Task<T, ContextType>::unwrap(){
+    if (!_handle) {
+        // throw dedicated
+        throw std::runtime_error{"No handle"};
+    }
+
+    return _handle.promise().get();
+}
+
+template <class T, Context ContextType>
+auto Task<T, ContextType>::try_unwrap() -> std::expected<T, std::error_code>{
+    if (!_handle) {
+        // return error "invalid_handle"
+        return std::make_error_code(std::errc::bad_address);
+    }
+
+    try {
+        return _handle.promise().get();
+    } catch (const std::exception &e) {
+        // return error "exception" + message (?)
+        return std::unexpected{std::make_error_code(std::errc::bad_address)};
+    } catch (...) {
+        // return error "exception" + unknown (?)
+        return std::unexpected{std::make_error_code(std::errc::bad_address)};
+    }
+}
+
+template <class T, Context ContextType>
+void Task<T, ContextType>::wait(){
+    assert(_handle);
+    if (!_handle) {
+        return; // warn??
+    }
+
+    _handle.promise().wait();
+}
+
 template<class T, Context ContextType>
 auto Task<T, ContextType>::get_async() const noexcept {
     return detail::TaskAwaiter<T, ContextType>{ _handle };
 }
 
 template<class T, Context ContextType>
-void Task<T, ContextType>::start() noexcept {
+void Task<T, ContextType>::start(std::stop_token st) noexcept {
     if (_handle) {
         auto &p = _handle.promise();
-        p.detach();
+        p.assign_stop_token(st);
+        p._flags |= TASK_DETACHED;
         _handle.resume();
     }
 }
 
-template <class T, Context ContextType> void Task<T, ContextType>::cancel() noexcept {
+template <class T, Context ContextType>
+void Task<T, ContextType>::cancel() noexcept {
     if (_handle) {
         auto &p = _handle.promise();
-        p._flags |= detail::TASK_CANCELLED;
+        p._flags |= TASK_CANCELLED;
+        p._state_cv.notify_all(); // notify potential waiters
     }
+}
+
+template <class T, Context ContextType> bool Task<T, ContextType>::is_canceled() noexcept{
+    // released / null tasks are implicitly canceled
+    return _handle ? _handle.promise().is_canceled() : true;
 }
 
 template <class T, Context ContextType>
@@ -174,68 +245,69 @@ template <class T, Context ContextType> bool Task<T, ContextType>::is_detached()
         return false;
     }
 
-    return _handle.promise()._flags & detail::TASK_DETACHED;
+    return _handle.promise()._flags & TASK_DETACHED;
 }
 
 namespace detail {
 
 template <class T, Context ContextType>
-auto TaskPromiseBase<T, ContextType>::initial_suspend() const noexcept -> std::suspend_always {
+auto FinalAwaiter<T, ContextType>::await_suspend(std::coroutine_handle<typename Task<T, ContextType>::promise_type> handle) noexcept-> std::coroutine_handle<> {
+    if (!handle) [[unlikely]] {
+        return std::noop_coroutine();
+    }
+
+    auto& p = handle.promise();
+    if (p.is_cancelled()) {
+        return std::noop_coroutine();
+    }
+
+    if (p._continuation) {
+        if ((p._flags & TASK_RESUME_ON_CAPTURED_CONTEXT) && p._captured_ctx) {
+            // post the continuation on the captured context if that flag is set
+            p._captured_ctx->post(post_coroutine, p._continuation);
+            return std::noop_coroutine();
+        }
+        // otherwise, continue with the continuation
+        return p._continuation;
+    }
+
+    // if we are detached and there is no continuation: destroy the frame by yourself
+    if (p._flags & TASK_DETACHED)  {
+        handle.destroy();
+    }
+
+    return std::noop_coroutine(); // return a noop continuation
+}
+
+template <Context ContextType>
+auto TaskPromiseBase<ContextType>::initial_suspend() const noexcept -> std::suspend_always {
     // tasks always start on the calling thread
     // rescheduling should be done by a specialized awaiter (-> asyncrt::core)
     return {};
 }
 
 template <class T, Context ContextType>
-auto TaskPromiseBase<T, ContextType>::final_suspend() const noexcept{
-    struct Awaiter {
-        FORCE_SUSPEND
-
-        std::coroutine_handle<> await_suspend(std::coroutine_handle<typename Task<T, ContextType>::promise_type> handle) noexcept {
-            if (!handle) [[unlikely]] {
-                return std::noop_coroutine();
-            }
-
-            auto& p = handle.promise();
-            if (p._continuation) {
-                if ((p._flags & TASK_RESUME_ON_CAPTURED_CONTEXT) && p._captured_ctx) {
-                    // post the continuation on the captured context if that flag is set
-                    p._captured_ctx->post(post_coroutine, p._continuation);
-                    return std::noop_coroutine();
-                }
-                // otherwise, continue with the continuation
-                return p._continuation;
-            }
-
-            // if we are detached and there is no continuation: destroy the frame by yourself
-            if (p._flags & TASK_DETACHED)  {
-                handle.destroy();
-            }
-
-            return std::noop_coroutine(); // return a noop continuation
-        }
-
-        void await_resume() const noexcept {}
-    };
-    return Awaiter{};
-}
-
-template <class T, Context ContextType>
-Task<T, ContextType> TaskPromiseBase<T, ContextType>::get_return_object(this auto &self) noexcept {
-    return Task<T, ContextType>{ std::coroutine_handle<typename Task<T, ContextType>::promise_type>::from_promise(self) };
+Task<T, ContextType> ValueTaskPromise<T, ContextType>::get_return_object() noexcept {
+    return Task<T, ContextType>{ std::coroutine_handle<typename Task<T, ContextType>::promise_type>::from_promise(*this) };
 }
 
 template<class T, Context ContextType>
-void TaskPromiseBase<T, ContextType>::unhandled_exception() {
+void ValueTaskPromise<T, ContextType>::unhandled_exception() {
     _state.set_exception(std::current_exception());
 }
 
-template <class T, Context ContextType> bool TaskPromiseBase<T, ContextType>::is_detached() const noexcept{
-    return _flags & TASK_DETACHED;
+template <Context ContextType>
+void TaskPromiseBase<ContextType>::assign_stop_token(std::stop_token st) {
+    _st = std::move(st);
+    _stop_callback.emplace(_st, [this] {
+        _flags |= TASK_CANCELLED;
+        _state_cv.notify_all();
+    });
 }
 
-template <class T, Context ContextType> void TaskPromiseBase<T, ContextType>::detach() noexcept {
-    _flags |= TASK_DETACHED;
+template <Context ContextType> bool TaskPromiseBase<ContextType>::is_cancelled() const noexcept {
+    return (_flags & TASK_CANCELLED)
+        || _st.stop_requested();
 }
 
 template <class T, Context ContextType>
@@ -252,24 +324,110 @@ void ValueTaskPromise<T, ContextType>::return_value(From &&from) {
     this->_state.set_value(std::forward<From>(from));
 }
 
-template<Context ContextType>
-void VoidTaskPromise<ContextType>::return_void() {
-    this->_state.set_value();
+template <class T, Context ContextType>
+auto ValueTaskPromise<T, ContextType>::get() -> T&& {
+    if (this->is_canceled()) {
+        throw Cancelled{};
+    }
+    return std::move(_future.get());
+}
+
+template<class T, Context ContextType>
+void ValueTaskPromise<T, ContextType>::wait() {
+    if (this->is_canceled() || _future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        return;
+    }
+
+    // we cant just wait for the future, we also need to respect cancellation
+    std::mutex mtx;
+    std::unique_lock lock{mtx};
+    // cancellation can happen either via stop token or other cancellation sources
+    this->state_cv.wait(lock, this->_st, [this] {
+        return _future.wait_for(std::chrono::seconds(0)) == std::future_status::ready
+            || (this->_flags & TASK_CANCELLED);
+    });
+}
+
+template <Context ContextType>
+auto VoidTaskPromise<ContextType>::get_return_object() noexcept-> Task<void, ContextType> {
+    return Task<void, ContextType>{ std::coroutine_handle<VoidTaskPromise>::from_promise(*this) };
+}
+
+template <Context ContextType>
+void VoidTaskPromise<ContextType>::unhandled_exception() {
+    _exception = std::current_exception();
+    this->_state_cv.notify_all();
+}
+
+template <Context ContextType>
+void VoidTaskPromise<ContextType>::return_void() noexcept {
+    _finished = true;
+    this->_state_cv.notify_all();
+}
+
+template <Context ContextType>
+void VoidTaskPromise<ContextType>::get() {
+    // if not yet finished / exception / canceled, wait here
+    if (!(_finished || _exception || this->is_cancelled())) {
+        std::mutex mtx;
+        std::unique_lock lock{mtx};
+        // wait for stop token or exception state
+        this->_state_cv.wait(lock, this->_st, [this] {
+            return _finished
+                || _exception != nullptr
+                || (this->_flags & TASK_CANCELLED);
+        });
+    }
+
+    // handle cancel and exceptions
+    if (this->is_cancelled()) {
+        throw Cancelled{};
+    }
+
+    if (_exception) {
+        std::rethrow_exception(_exception);
+    }
+}
+
+template <Context ContextType>
+void VoidTaskPromise<ContextType>::wait() {
+    // shortcut
+    if (this->is_canceled() || _finished || _exception) {
+        return;
+    }
+
+    std::mutex mtx;
+    std::unique_lock lock{mtx};
+    // wait for finished or exception state or stop token
+    // waiting with stop token is fine here since a task, when cancelled, can return immediately from wait()
+    this->_state_cv.wait(lock, this->_st, [this] {
+        return _finished
+            || _exception != nullptr
+            || (this->_flags & TASK_CANCELLED);
+    });
 }
 
 template<class T, class ContextType>
 bool TaskAwaiter<T, ContextType>::await_ready() const noexcept {
-    return !_handle || _handle.done(); // shortcut either if no frame is awaited or the awaited frame is already done
+    if (!_handle) {
+        return true;
+    }
+
+    // shortcut either if no frame is awaited or the awaited frame is already done or the task is cancelled
+    return _handle.done()
+           || _handle.promise().is_canceled();
 }
 
 template<class T, class ContextType>
 template<class InnerPromiseType>
-auto TaskAwaiter<T, ContextType>::await_suspend(std::coroutine_handle<InnerPromiseType> handle) noexcept -> std::coroutine_handle<>{
+auto TaskAwaiter<T, ContextType>::await_suspend(std::coroutine_handle<InnerPromiseType> handle) noexcept -> std::coroutine_handle<> {
     if (!handle) [[unlikely]] {
         return std::noop_coroutine();
     }
 
     auto &p = _handle.promise();
+    // no need to check for cancellation here since in await_ready, we take the shortcut if the task has been cancelled
+
     p._continuation = handle;
     // until the first suspension, the task owns itself. after that, it gets detached
     // p.detach();
@@ -285,19 +443,8 @@ auto TaskAwaiter<T, ContextType>::await_suspend(std::coroutine_handle<InnerPromi
 
 template<class T, class ContextType>
 auto TaskAwaiter<T, ContextType>::await_resume(){
-    try {
-        auto future = _handle.promise()._state.get_future();
-        if constexpr (std::is_same_v<T, void>) {
-            future.get();
-        } else {
-            return std::move(future.get());
-        }
-    } catch (...) {
-        std::rethrow_exception(std::current_exception());
-    }
+    return _handle.promise().get();
 }
-
-
 
 }
 

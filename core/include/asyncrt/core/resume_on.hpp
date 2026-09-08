@@ -11,8 +11,14 @@ struct ResumeOnAwaitable {
 
     template<class T>
     void await_suspend(std::coroutine_handle<T> handle) {
-        // handle.promise().detach();
-        // post the handle, detach it and immediately return to the caller
+        // if we are working with a task promise and it is cancelled, dont reschedule the coroutine
+        if constexpr (std::is_base_of_v<detail::TaskPromiseBase<ContextType>, T>) {
+            // if the task is cancelled, dont continue
+            if (handle.promise().is_cancelled()) {
+                return;
+            }
+        }
+
         ctx.post(post_coroutine, handle);
     }
 
