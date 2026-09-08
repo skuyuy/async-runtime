@@ -3,21 +3,18 @@
 #include <future>
 #include <concepts>
 #include <coroutine>
+#include <expected>
+#include <utility>
 
 #include "detail/coro_utils.hpp"
 #include "context.hpp"
-#include "detail/coro_utils.hpp"
+#include "task_error.hpp"
+#include "task_flags.hpp"
 
 namespace asyncrt::core {
 
 template<class T, Context ContextType>
 class Task;
-
-struct Cancelled : std::runtime_error {
-    Cancelled()
-        : std::runtime_error("Task has been cancelled")
-    {}
-};
 
 namespace detail {
 
@@ -112,6 +109,10 @@ public:
 
     ~Task() noexcept { destroy(); }
 
+    auto unwrap();
+    auto try_unwrap() -> std::expected<T, std::error_code>;
+    void wait();
+
     auto get_async() const noexcept;
     auto operator co_await() const & noexcept { return get_async(); }
     auto operator co_await() const && noexcept { return get_async(); }
@@ -165,8 +166,7 @@ auto Task<T, ContextType>::operator=(Task &&other) noexcept -> Task& {
 template <class T, Context ContextType>
 auto Task<T, ContextType>::unwrap(){
     if (!_handle) {
-        // throw dedicated
-        throw std::runtime_error{"No handle"};
+        throw TaskException::invalid_handle();
     }
 
     return _handle.promise().get();
@@ -175,18 +175,19 @@ auto Task<T, ContextType>::unwrap(){
 template <class T, Context ContextType>
 auto Task<T, ContextType>::try_unwrap() -> std::expected<T, std::error_code>{
     if (!_handle) {
-        // return error "invalid_handle"
-        return std::make_error_code(std::errc::bad_address);
+        return std::unexpected{TaskError::invalid_handle};
     }
 
     try {
         return _handle.promise().get();
-    } catch (const std::exception &e) {
-        // return error "exception" + message (?)
-        return std::unexpected{std::make_error_code(std::errc::bad_address)};
+    } catch (const TaskException &task_err) {
+        return std::unexpected{task_err.code};
+    } catch (const std::system_error &sys_err) {
+        return std::unexpected{sys_err.code()};
+    } catch (const std::exception &) {
+        return std::unexpected{TaskError::exception};
     } catch (...) {
-        // return error "exception" + unknown (?)
-        return std::unexpected{std::make_error_code(std::errc::bad_address)};
+        return std::unexpected{TaskError::unknown};
     }
 }
 
@@ -327,7 +328,7 @@ void ValueTaskPromise<T, ContextType>::return_value(From &&from) {
 template <class T, Context ContextType>
 auto ValueTaskPromise<T, ContextType>::get() -> T&& {
     if (this->is_canceled()) {
-        throw Cancelled{};
+        throw TaskException::cancelled();
     }
     return std::move(_future.get());
 }
@@ -381,7 +382,7 @@ void VoidTaskPromise<ContextType>::get() {
 
     // handle cancel and exceptions
     if (this->is_cancelled()) {
-        throw Cancelled{};
+        throw TaskException::cancelled();
     }
 
     if (_exception) {
