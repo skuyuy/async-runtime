@@ -8,7 +8,6 @@
 
 #include "detail/coro_utils.hpp"
 #include "context.hpp"
-#include "detail/coro_utils.hpp"
 #include "task_error.hpp"
 #include "task_flags.hpp"
 
